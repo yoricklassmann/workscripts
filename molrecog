@@ -1,0 +1,818 @@
+#!/usr/bin/env python
+import os
+import sys
+import numpy as np
+import itertools as it
+import argparse
+import copy
+import subprocess 
+import json
+
+stdBondLengths = {'cc': 1.60, 'ch': 1.10, 'cn': 1.50, 'co': 1.50,
+               'cs': 1.90, 'nh': 1.10, 'hh': 2.6, 'sh': 1.40,
+               'sn': 1.70, 'nn': 1.50}
+
+grad2rad = np.pi/180.
+rad2grad = 180./np.pi
+b2A = 0.529177249
+A2b = 1./b2A
+
+class molGraph(object):
+    # Simple molecular graph class, where vertices are
+    # atoms and edges are bonds 
+    def __init__(self,graphinput=None):
+        if graphinput == None:
+            graphinput = {}
+        self.__graph_dict = graphinput
+    
+    def add_vertex(self,vertex):
+        if vertex not in self.__graph_dict:
+            self.__graph_dict[vertex] = []  
+            return True
+        else:
+            return False
+    
+    def add_edge(self,edge):
+        (vertex1, vertex2) = (edge[0], edge[1])
+        if vertex1 in self.__graph_dict:
+            self.__graph_dict[vertex1].append(vertex2)
+        else:
+            self.__graph_dict[vertex1] = [vertex2]
+
+    def get_vertices(self):
+        return list(self.__graph_dict.keys())
+
+    def get_edges(self):
+        edges = []
+        for node in self.__graph_dict:
+            for neighbour in self.__graph_dict[node]:
+                edges.append({node, neighbour})
+
+        return edges
+
+    def get_neighbours(self,vertex):
+        return self.__graph_dict[vertex]
+
+    def get_dict(self):
+        return self.__graph_dict
+
+    def depth_first_search(self,vertex,paths,discovered,curPathLength,
+                           maxPathLength=4):
+        """ This is a modified depth first search method that determines 
+            all simple paths of a certain length. In the usual DFS one
+            discovers vertices only once, while here multiple discoveries
+            are allowed. The list paths is passed by reference and contains 
+            the output of the function.
+            Inputs: vertex (str) and maximum pathlength (int)
+            Outputs: list of paths with maximum pathlengt (list of strs)    """
+        curPathLength += 1   # each recursion, increase current path length 
+        neighbours = self.get_neighbours(vertex)
+        # only recurse if maximum pathlength is not yet reached
+        if curPathLength < maxPathLength: 
+            for neighbour in neighbours:
+                # only recurse if the vertex has not yet been discovered
+                if neighbour not in discovered:
+                    # add current neighbour to the discovered list
+                    discovered.append(neighbour)
+                    # recurse 
+                    test = self.depth_first_search(neighbour,paths,discovered,
+                                            curPathLength, maxPathLength)
+                # only if the bottom is actually reached will test a value
+                    if test != None:
+                        tmp = test[:]
+                        paths.append(tmp)
+                    discovered.remove(neighbour)
+        elif curPathLength == maxPathLength:
+            # bottom is reached 
+            return discovered
+
+class Cartesians(object):
+    def __init__(self, filename):
+        self.filename = filename 
+
+    def get(self, filetype):
+        return getattr(self, filetype)()
+
+    def tm(self):
+        f = open(self.filename)
+        try:
+            atomName = []
+            atomCoord = []
+            i = 1
+            for line in f:
+                if line[0] != "$":
+                    #print(line)
+                    atomName.append((line.strip().split()[3], str(i)))
+                    atomCoord.append([float(line.strip().split()[i])
+                                      for i in range(3)])
+                    i += 1
+                if "$user-defined bonds" in line:
+                    break
+        finally:
+            f.close()
+        return atomName, atomCoord 
+
+    def xyz(self):
+        f = open(self.filename)
+        try:
+            atomName = []
+            atomCoord = []
+            iLine = 1
+            for line in f:
+                if iLine < 3:  
+                    iLine += 1
+                    continue
+                else:
+                    atomName.append((line.strip().split()[0], str(iLine-2)))
+                    atomCoord.append([float(line.strip().split()[i])
+                                      for i in range(1,4)])
+                    iLine += 1
+        finally:
+            f.close()
+        return atomName, atomCoord 
+
+class Writer(object):
+    def __init__(self, inputCoords, atomNames, outputDir):
+        self.inputCoords = inputCoords
+        self.outputDir = outputDir
+        self.atomNames = atomNames
+
+    def write(self, filetype):
+        return getattr(self, filetype)()
+
+    def tm(self):
+        fileName = self.outputDir + '/coord' 
+        subprocess.run(['touch',fileName]) 
+
+        with open(fileName,"w") as f:
+            # write first three atoms
+            f.write("$coord\n")
+            for i, atomCoord in enumerate(self.inputCoords):
+                f.write('{x:20.14f}  {y:20.14f}  {z:20.14f}'
+                        '      {n:3}\n'.format(x = atomCoord[0], y=atomCoord[1],
+                                          z=atomCoord[2], n=self.atomNames[i][0]))
+            f.write("$end")
+    
+    def xyz(self):
+        fileName = self.outputDir + '/coord.xyz' 
+        subprocess.run(['touch',fileName]) 
+
+        with open(fileName,"w") as f:
+            f.write(str(len(self.inputCoords)) + '\n \n')
+            for i, atomCoord in enumerate(self.inputCoords):
+                f.write('{n:3} {x:20.14f}  {y:20.14f}  {z:20.14f}'
+                        '\n'.format(x = atomCoord[0], y=atomCoord[1],
+                                    z=atomCoord[2], n=self.atomNames[i][0]))
+
+    def gaussian(self):
+        fileName = self.outputDir + '/go.com' 
+        templateFile = './go.com'
+        try:
+            subprocess.run(['cp',templateFile, fileName])
+        except:
+            raise ValueError('Template file ./go.com not found') 
+
+        with open(fileName,"a") as f:
+            for i, atomCoord in enumerate(self.inputCoords):
+                f.write('{n:3} {x:20.14f}  {y:20.14f}  {z:20.14f}'
+                        '\n'.format(x = atomCoord[0], 
+                                    y=atomCoord[1],
+                                    z=atomCoord[2],
+                                    n=self.atomNames[i][0]))
+            f.write('\n')
+
+
+    def bagel(self):
+        fileName = self.outputDir + '/input.json' 
+        templateFile = './input.json'
+        try:
+            fin = open(templateFile, 'r')
+        except:
+            raise ValueError('Template file ./input.json not found') 
+
+        templateObject = json.load(fin)
+        for i, atomCoord in enumerate(self.inputCoords):
+            if type(atomCoord) != type([]):
+                atomCoord = atomCoord.tolist()
+            templateObject['bagel'][0]['geometry']\
+            .append( {"atom": 
+                    self.atomNames[i][0],
+                 "xyz": 
+                    #atomCoord.tolist()
+                    atomCoord
+                }
+            )
+
+        fin.close()
+        fout = open(fileName, 'w')
+        json.dump(templateObject, fout, indent=4)
+        fout.close()
+
+    def Z_matrix(self,outputFile):
+        fileName = outputFile 
+        subprocess.run(['touch',fileName]) 
+        with open(fileName,"w") as f:
+            # write first three atoms
+            f.write("# Output\n\n")
+            f.write(" \n")
+            f.write("\n")
+            f.write("0  1\n")
+            line = self.atomNames[0][0].upper() + "\n"
+            f.write(line)
+            line = self.atomNames[1][0].upper() + "  " + str(self.BLConnectivity[1]+1) + "  r2\n"
+            f.write(line)
+            line = (self.atomNames[2][0].upper() +  "  " + str(self.BLConnectivity[2]+1) +  "  r3  " +
+                    str(self.BAConnectivity[2]+1) + "  a3\n")
+            f.write(line)
+            for i in range(3,self.nrAtoms):
+                line = (self.atomNames[i][0].upper() + "  " + str(self.BLConnectivity[i]+1) + "  r" +
+                str(i+1) + "  " + str(self.BAConnectivity[i]+1) + "  a" + str(i+1) + "  "
+                + str(self.TDConnectivity[i]+1) + "  d" + str(i+1) +"\n") 
+                f.write(line)
+            f.write("Variables:\n")
+            for i in range(self.nrAtoms):
+                if self.bondLengths[i] != 0:
+                    f.write('r{strInd:1d}= {strBL:6.4f}\n'.format(strInd = i + 1, strBL = self.bondLengths[i]))
+                if self.bondAngles[i] != 0:
+                    f.write('a{strInd:1d}= {strBA:6.2f}\n'.format(strInd = i + 1, strBA = self.bondAngles[i]))
+                if self.torsions[i] != 0:
+                    f.write('d{strInd:1d}= {strTD:6.2f}\n'.format(strInd = i + 1, strTD = self.torsions[i]))
+            f.write("\n") 
+
+class redundantInternals(molGraph):
+    """ This class is inteded for conversion of Cartesian coordinates 
+        to redundant internals. Basically the cartesians are read from
+        some file (right now only Turbomole is supported -> change in
+        future) and the relevant bond lengths are calculated first. 
+        From this the molecular graph molGraph class is constucted.
+        Based on this connectivity all bond angles and torsional 
+        dihedrals are determined. """
+    def __init__(self, fname=None, inpMolGraph=None, mollist=None,
+                 filetype = None):
+        if fname != None and mollist == None and inpMolGraph==None:
+            self.setupGraph = True
+            self.atomNames, self.atomCoords = self.getcartesians(fname, filetype)
+            self.nrAtoms = len(self.atomNames)
+            self.distMat = self.initDistanceMatrix()
+            self.BLConnectivity, self.bondLengths = self.initBondLengths()
+        elif fname != None and mollist == None and inpMolGraph!=None:
+            self.setupGraph = False 
+            self.atomNames, self.atomCoords = self.getcartesians(fname, filetype)
+            self.nrAtoms = len(self.atomNames)
+            self.distMat = self.initDistanceMatrix()
+        elif fname == None and mollist != None:
+            self.atomNames, self.atomCoords = mollist 
+            self.nrAtoms = len(self.atomNames)
+            self.distMat = self.initDistanceMatrix()
+
+        if inpMolGraph == None:
+            molGraph.__init__(self)
+            for indBL, BL in enumerate(self.BLConnectivity):
+                self.add_vertex(indBL)
+                self.add_edge([indBL , BL])
+                self.add_edge([BL , indBL])
+        else:
+            molGraph.__init__(self,graphinput=inpMolGraph)
+            if self.atomCoords != None:
+                self.BLConnectivity, self.bondLengths = self.initBondLengths()
+
+        self.BAConnectivity, self.bondAngles = self.setBondAngles()
+        self.TDConnectivity, self.torsions = self.setTorsionalDihedrals()
+
+    def getcartesians(self,filename,filetype):
+        return Cartesians(filename).get(filetype)
+    
+    def initDistanceMatrix(self):
+        distMat = np.zeros((self.nrAtoms,self.nrAtoms))
+        for i in range(self.nrAtoms):
+            for j in range(i+1,self.nrAtoms):
+                posi = np.array(self.atomCoords[i])
+                posj = np.array(self.atomCoords[j])
+                vecji = posi - posj 
+                distji = np.sqrt(np.dot(vecji,vecji))
+                distMat[i,j] = distji
+                distMat[j,i] = distji
+
+        return distMat
+                 
+    def getNumberedAtom(self, ind):
+        return self.atomNames[ind][0] +  self.atomNames[ind][1]
+
+    def initBondLengths(self):
+        print("Bond lengths:")
+        bondLengths = []
+        distconnect = np.zeros(self.nrAtoms).astype(int)
+        dist = np.zeros(self.nrAtoms)
+        if self.setupGraph:
+            for i in range(1,self.nrAtoms):
+                indMin, distMin = (np.argmin(self.distMat[i,:i]),
+                                   np.amin(self.distMat[i,:i]))
+                atomInit = self.getNumberedAtom(indMin)
+                atomFinal = self.getNumberedAtom(i)
+                print('{strAtomi:3} - {strAtomj:4}: {strDistji:.3f} pm'.format(
+                      strAtomi = atomInit, strAtomj = atomFinal,
+                      strDistji = distMin*100))
+                distconnect[i] = indMin 
+                dist[i] = distMin
+        else:
+            for i in range(1,self.nrAtoms):
+                bondPartner = self.get_neighbours(i)[0]
+                bondLength = self.distMat[i, self.get_neighbours(i)[0]]
+                distconnect[i] = bondPartner
+                dist[i] = bondLength 
+                atomInit = self.getNumberedAtom(bondPartner)
+                atomFinal = self.getNumberedAtom(i)
+                print('{strAtomi:3} - {strAtomj:4}: {strDistji:.3f} pm'.format(
+                      strAtomi = atomInit, strAtomj = atomFinal,
+                      strDistji = bondLength*100))
+        
+        return distconnect, dist
+
+
+    def setBondAngles(self):
+        print("Bond Angles:")
+        anglesConnectivity = np.zeros(self.nrAtoms).astype(int)
+        angles = np.zeros(self.nrAtoms)
+        for i in range(2,self.nrAtoms):
+            anglevert = [i]
+            anglevert.append(self.get_neighbours(anglevert[-1])[0])
+            neighbours = self.get_neighbours(anglevert[-1])
+            if neighbours[0] == anglevert[-1]:
+                for neighbour in neighbours:
+                    if neighbour not in anglevert and neighbour < i:
+                        anglevert.append(neighbour)
+                        break
+            else:
+                anglevert.append(neighbours[0])
+            anglesConnectivity[i] = anglevert[2]
+            atomi = self.getNumberedAtom(anglevert[0]) 
+            atomj = self.getNumberedAtom(anglevert[1])
+            atomk = self.getNumberedAtom(anglevert[2])
+            posi = np.array(self.atomCoords[anglevert[0]])
+            posj = np.array(self.atomCoords[anglevert[1]])
+            posk = np.array(self.atomCoords[anglevert[2]])
+            vecji = posi - posj 
+            vecjk = posk - posj 
+            normji = np.sqrt(np.dot(vecji,vecji))
+            normjk = np.sqrt(np.dot(vecjk,vecjk))
+            dotijk =  np.dot(vecji,vecjk)
+            angleijk = np.arccos(dotijk/(normji*normjk))*rad2grad
+            angles[i] = angleijk
+            print('{strAtomi:3} -  {strAtomj:3} -  {strAtomk:4}: {strAngleijk:7.3f} deg'.format(
+                  strAtomi = atomi, strAtomj = atomj, strAtomk = atomk,
+                  strAngleijk =  angleijk))
+        return anglesConnectivity, angles 
+
+    def setTorsionalDihedrals(self):
+        torsConnectivity = np.zeros(self.nrAtoms).astype(int)
+        tors = np.zeros(self.nrAtoms)
+        dihedralVertices = []
+        print("Proper dihedrals:")
+        for i in self.get_vertices()[3:]:
+            torsvert = [i]
+            torsvert.append(self.get_neighbours(torsvert[-1])[0])
+            torsvert.append(self.BAConnectivity[i])
+            nextneighbours = self.get_neighbours(self.BAConnectivity[i]) 
+            if nextneighbours[0] in torsvert:
+                if len(nextneighbours) == 1:
+                    newneighbours = self.get_neighbours(nextneighbours[0])
+                    for neighbour in newneighbours:
+                        if neighbour not in torsvert and neighbour < i:
+                            torsvert.append(neighbour)
+                            break
+                else:
+                    for neighbour in nextneighbours:
+                        if neighbour not in torsvert and neighbour < i:
+                            torsvert.append(neighbour)
+                            break
+            else:
+                torsvert.append(nextneighbours[0]) 
+                        
+            atomi = self.getNumberedAtom(torsvert[0])
+            atomj = self.getNumberedAtom(torsvert[1])
+            atomk = self.getNumberedAtom(torsvert[2])
+            #print(torsvert)
+            atoml = self.getNumberedAtom(torsvert[3])
+            posi = np.array(self.atomCoords[torsvert[0]])
+            posj = np.array(self.atomCoords[torsvert[1]])
+            posk = np.array(self.atomCoords[torsvert[2]])
+            posl = np.array(self.atomCoords[torsvert[3]])
+            vecij = posj - posi 
+            veckj = posk - posj 
+            veclk = posl - posk 
+            nrmlijk = np.cross(vecij,veckj)
+            nrmljkl = np.cross(veckj,veclk)
+            ccijkl = np.dot(veckj,np.cross(nrmlijk,nrmljkl))
+            ddijkl = np.linalg.norm(veckj)*np.dot(nrmlijk,nrmljkl)
+            torsi = np.arctan2(ccijkl,ddijkl)*rad2grad
+            #if torsi < 0:
+            #    torsi += 360
+            tors[i] = torsi 
+            torsConnectivity[i] = torsvert[-1] 
+            print('{strAtomi:3} -  {strAtomj:3} -  {strAtomk:3}'
+                  ' -  {strAtoml:4}: {strDihedralijkl:7.3f} deg'.format(
+                  strAtomi = atomi, strAtomj = atomj, strAtomk = atomk,
+                  strAtoml = atoml, strDihedralijkl = torsi))
+
+        return torsConnectivity, tors
+
+    def write(self, outputDir, filetype, inputCoords=None):
+        if inputCoords == None:
+            Writer(self.atomCoords, self.atomNames, outputDir).write(filetype)
+        else:
+            Writer(inputCoords, self.atomNames, outputDir).write(filetype)
+
+
+    def _setup_3Drotation_matrix(self,rotationAxis,angle):
+        angle = angle * grad2rad
+        antisymmetricTerm = np.array([[              0., -rotationAxis[2],  rotationAxis[1]],
+                                      [ rotationAxis[2],               0., -rotationAxis[0]],
+                                      [-rotationAxis[1],  rotationAxis[0],               0.]])
+        M = (np.cos(angle) * np.eye(3) + np.outer(rotationAxis, rotationAxis)
+             * (1. - np.cos(angle)) + antisymmetricTerm * np.sin(angle))
+        return M
+        
+
+    def transform_2_xyz(self, overWrite=False):
+        """
+        Implementation of the natural extension reference frame (NeRF) method
+        first presented by Parsons et. al J. Comput. Chem. 26; 1063-1068; 2005
+        The idea is to assume that a triad of atoms, A, B, C are located on the
+        xy plane such that C lies at the origin, B on the negative x axis and 
+        A in the xy plane. Then a new atom D is placed in R3 accoriding to sph-
+        erical coordinates, defined via its internals with respect to the triad.
+        Since the triad A B C can be situated anywhere in R3 in the last step we
+        have to transform the vector D to the triad reference frame.   
+        """
+
+        positions = []
+        pos0 = np.array([0., 0., 0.])
+        positions.append(pos0)
+        pos1 = np.array([self.bondLengths[1], 0., 0.])
+        positions.append(pos1)
+        if self.BLConnectivity[2] == 0:
+            rotMat = self._setup_3Drotation_matrix([0.,0.,1.], self.bondAngles[2])
+            pos2 = np.matmul(rotMat,np.array([self.bondLengths[2],0., 0.])) 
+            positions.append(pos2)
+        elif self.BLConnectivity[2] == 1:
+            rotMat = self._setup_3Drotation_matrix([0.,0.,1.], self.bondAngles[2])
+            pos2 = np.matmul(rotMat,np.array([-self.bondLengths[2],0., 0.])) 
+            pos2[0] = pos2[0] + pos1[0]
+            positions.append(pos2)
+         
+        for i in range(3,self.nrAtoms):
+            A = positions[self.TDConnectivity[i]]
+            B = positions[self.BAConnectivity[i]]
+            C = positions[self.BLConnectivity[i]]
+            R = self.bondLengths[i]
+            theta = self.bondAngles[i]*grad2rad
+            phi = self.torsions[i]*grad2rad
+            # -R*np.cos(theta) because the x element of the vector in the above
+            # paper is not R*np.cos(theta) but R*np.cos(pi-theta)=-R*np.cos(theta)
+            Dref = np.array([-R*np.cos(theta), R*np.cos(phi)*np.sin(theta),
+                          R*np.sin(phi)*np.sin(theta)])
+            unitbc = (C-B)/np.linalg.norm(C-B)
+            vecAB = B-A
+            nrmlabc = np.cross(vecAB,unitbc)
+            nrmlabc = nrmlabc/np.linalg.norm(nrmlabc)
+            molx = unitbc
+            moly = np.cross(nrmlabc,unitbc) 
+            moly = moly/np.linalg.norm(moly)
+            molz = nrmlabc 
+            molFrame = np.array([molx,moly,molz]).T
+            D = np.matmul(molFrame,Dref) + C 
+            positions.append(D)
+
+        if overWrite:
+            self.atomCoords = positions
+        else:
+            return positions
+
+        
+    def _mkdirs(self, step, CWD, other=None):
+        if other != None: 
+            initialDir = CWD + "step0"  
+            finalDir   = CWD + "step" + str(step)  
+            subprocess.run(['mkdir',initialDir]) 
+            subprocess.run(['mkdir',  finalDir]) 
+            return initialDir, finalDir
+        else:
+            newDir = CWD + "step" + str(step)
+            subprocess.run(['mkdir',  newDir]) 
+            return newDir
+        
+
+    def interpolate_in_internals(self, other, nrSteps, CWD, filetype):
+        diffBL = []
+        diffBA = []
+        diffTD = []
+        if len(self.bondLengths) == len(other.bondLengths):
+            for i in range(len(self.bondLengths)):
+                diffBL.append(other.bondLengths[i] - self.bondLengths[i])
+        if len(self.bondAngles) == len(other.bondAngles):
+            for i in range(len(self.bondAngles)):
+                diffBA.append(other.bondAngles[i] - self.bondAngles[i])
+        if len(self.torsions) == len(other.torsions):
+            for i in range(len(self.torsions)):
+                tmpDiff = other.torsions[i] - self.torsions[i]
+                if abs(tmpDiff) > 180.: 
+                    if tmpDiff < 0.:
+                        tmpDiff += 360 
+                    elif tmpDiff > 0.:
+                        tmpDiff -= 360 
+                diffTD.append(tmpDiff)
+        stepSizeBL = np.array(diffBL)/nrSteps
+        stepSizeBA = np.array(diffBA)/nrSteps
+        stepSizeTD = np.array(diffTD)/nrSteps
+        print(stepSizeBL)
+        initDir, finDir = self._mkdirs(nrSteps, CWD, other)
+        self.transform_2_xyz(overWrite=True)
+        other.transform_2_xyz(overWrite=True)
+        self.write(initDir, filetype)
+        other.write(finDir, filetype)
+        copyBLs = copy.deepcopy(self.bondLengths)
+        copyBAs = copy.deepcopy(self.bondAngles)
+        copyTDs = copy.deepcopy(self.torsions)
+        for i in range(1,nrSteps):
+            for j in range(len(self.bondLengths)):
+                self.bondLengths[j] = self.bondLengths[j] + stepSizeBL[j]
+            for j in range(len(self.bondAngles)):
+                self.bondAngles[j] = self.bondAngles[j] + stepSizeBA[j]
+            for j in range(len(self.torsions)):
+                self.torsions[j] = self.torsions[j] + stepSizeTD[j]
+            tmpCoords = self.transform_2_xyz()
+            newDir = self._mkdirs(i, CWD)
+            self.write(newDir, filetype, inputCoords = tmpCoords)
+
+    def incrementInternal(self, internalType, internalIndex, stepSize):
+        if internalType == "bl":
+            self.bondLengths[internalIndex] = self.bondLengths[internalIndex] + stepSize
+        if internalType == "ba":
+            self.bondAngles[internalIndex] = self.bondAngles[internalIndex] + stepSize
+        if internalType == "td":
+            self.torsions[internalIndex] = self.torsions[internalIndex] + stepSize
+            #print(self.torsions[internalIndex])
+            #print(internalIndex)
+        print(self.torsions)
+        
+    
+    def rigidscan1D(self, internalType, atomsInvolved, stepSize, nrSteps, CWD,
+                    filetype):
+        tmpAtoms = atomsInvolved.split("-")[:]
+        if internalType != 'bl': 
+            internalIndex = self.atomNames.index(tuple(tmpAtoms[0]))
+        else:
+            internalIndex = self.atomNames.index(tuple(tmpAtoms[-1]))
+        self.transform_2_xyz(overWrite=True)
+        initDir = self._mkdirs(0, CWD)
+        self.write(initDir, filetype)
+        copyBLs = copy.deepcopy(self.bondLengths)
+        for i in range(1,nrSteps+1):
+            self.incrementInternal(internalType, internalIndex, stepSize)
+            tmpCoords = self.transform_2_xyz()
+            newDir = self._mkdirs(i, CWD)
+            self.write(newDir, filetype, inputCoords = tmpCoords)
+        
+    def rigidscan2D(self, internalType, atomsInvolved, secondStep, stepSize, nrSteps, CWD):
+        if internalType[1] == "bl":
+            tmpAtoms = atomsInvolved[1].split("-")[:]
+            changedInternal1 = self.atomNames.index(tmpAtoms[-1])
+            self.bondLengths[changedInternal1] = self.bondLengths[changedInternal1] + secondStep 
+            self.rigidscan1D(internalType[0], atomsInvolved[0],stepSize,nrSteps,CWD)
+        elif internalType[1] == "ba":
+            tmpAtoms = atomsInvolved[1].split("-")[:]
+            changedInternal1 = self.atomNames.index(tmpAtoms[0])
+            self.bondLengths[changedInternal1] = self.bondLengths[changedInternal1] + secondStep 
+            self.rigidscan1D(internalType[0], atomsInvolved[0],stepSize,nrSteps,CWD)
+        elif internalType[1] == "td":
+            tmpAtoms = atomsInvolved[1].split("-")[:]
+            changedInternal1 = self.atomNames.index(tmpAtoms[0])
+            self.bondLengths[changedInternal1] = self.bondLengths[changedInternal1] + secondStep 
+            self.rigidscan1D(internalType[0], atomsInvolved[0],stepSize,nrSteps,CWD)
+
+    def __sub__(self, other):
+        meanDiffBL  = 0.
+        meanDiffBA  = 0.
+        meanDiffTD  = 0.
+        meanDiffTot = 0.
+        totNrInternals = (len(self.bondLengths) + len(self.bondAngles)
+                         + len(self.torsions) - 6)
+        if len(self.bondLengths) == len(other.bondLengths):
+            for i in np.arange(len(self.bondLengths)): 
+                meanDiffBL += np.abs(self.bondLengths[i] 
+                                   - other.bondLengths[i])
+            meanDiffTot += meanDiffBL/totNrInternals
+            meanDiffBL = meanDiffBL/(len(self.bondLengths)-1)
+            print("Bond length deviation")
+            print(meanDiffBL*100)
+        if len(self.bondAngles) == len(other.bondAngles):
+            for i in np.arange(len(self.bondAngles)): 
+                meanDiffBA += np.abs(self.bondAngles[i] 
+                                   - other.bondAngles[i])
+            meanDiffTot += meanDiffBA/totNrInternals
+            meanDiffBA = meanDiffBA/(len(self.bondAngles)-2)
+            print("Bond angle deviation")
+            print(meanDiffBA)
+        if len(self.torsions) == len(other.torsions):
+            for i in np.arange(len(self.torsions)): 
+                tmpDiff = np.abs(self.torsions[i] 
+                                  - other.torsions[i])
+                if tmpDiff > 180.:
+                    tmpDiff -= 360 
+                meanDiffTD += tmpDiff 
+            meanDiffTot += meanDiffTD/totNrInternals
+            meanDiffTD = meanDiffTD/(len(self.torsions)-2)
+            print("Torsional dihedral deviation")
+            print(meanDiffTD)
+        
+        print("Total internals distance") 
+        print(meanDiffTot)
+
+
+def main():
+    CWD = os.getcwd() + "/"
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-sh","--show",nargs=2)
+    parser.add_argument("-c","--compare",nargs=3)
+    parser.add_argument("-cp","--convert",nargs=5)
+    parser.add_argument("-ls1d","--linscan1d",nargs=7)
+    parser.add_argument("-ls2d","--linscan2d",nargs=8)
+    parser.add_argument("-liic","--lininterp",nargs=5)
+    parser.add_argument("-b","--bohr",action='store_true')
+    args = parser.parse_args()
+
+    if args.show:
+        tmpFileName = CWD + args.show[0]
+        geom = redundantInternals(tmpFileName,
+                                  filetype=args.show[1]) 
+
+    if args.compare:
+        tmpFileName1 = CWD + args.compare[0]
+        tmpFileName2 = CWD + args.compare[1]
+        geom1 = redundantInternals(tmpFileName1, 
+                                   filetype=args.compare[2])
+        gGraph1 = geom1.get_dict()
+        geom2 = redundantInternals(tmpFileName2,
+                                   inpMolGraph=gGraph1,
+                                   filetype=args.compare[2])
+        diff = geom1 - geom2
+    
+    if args.convert: 
+        tmpFileName1 = CWD + args.convert[0]
+        tmpFileName2 = CWD + args.convert[1]
+        geom = redundantInternals(tmpFileName1,
+                                  filetype=args.convert[2]) 
+        geom.write(args.convert[4], filetype=args.convert[3]) 
+        
+    if args.linscan1d:
+        tmpFileName   = CWD + args.linscan1d[0]
+        filetype = args.linscan1d[1]
+        internalType  = args.linscan1d[2]
+        atomsInvolved = args.linscan1d[3]
+        stepSize      = float(args.linscan1d[4])
+        nrSteps       = int(args.linscan1d[5])
+        geom = redundantInternals(tmpFileName, filetype=filetype) 
+        geom.rigidscan1D(internalType, atomsInvolved, 
+                         stepSize, nrSteps, CWD, args.linscan1d[6])
+        
+    if args.linscan2d:
+        tmpFileName   = CWD + args.linscan2d[0]
+        internalType  = args.linscan2d[1:3]
+        atomsInvolved = args.linscan2d[3:5]
+        secondStep    = float(args.linscan2d[5])
+        stepSize      = float(args.linscan2d[6])
+        nrSteps       = int(args.linscan2d[7])
+        geom = redundantInternals(tmpFileName) 
+        geom.rigidscan2D(internalType, atomsInvolved, secondStep, stepSize, nrSteps,CWD)
+
+    if args.lininterp:
+        tmpFileName1 = CWD + args.lininterp[0]
+        tmpFileName2 = CWD + args.lininterp[1]
+        filetype = args.lininterp[2]
+        geom1 = redundantInternals(fname=tmpFileName1, filetype=filetype) 
+        gGraph1 = geom1.get_dict()
+        geom2 = redundantInternals(fname=tmpFileName2, inpMolGraph=gGraph1,
+                                   filetype=filetype)
+        geom1.interpolate_in_internals(geom2,int(args.lininterp[3]),CWD,args.lininterp[4])
+
+
+    #if args.linscan1dCart:
+    #    tmpFileName   = CWD + args.linscan1dCart[0]
+    #    atomsInvolved = args.linscan1dCart[1].split("-")
+    #    stepSize      = float(args.linscan1dCart[2])
+    #    nrSteps       = int(args.linscan1dCart[3])
+
+    #    def readcartesians(filename):
+    #        f = open(filename)
+    #        try:
+    #            atomName = []
+    #            atomCoord = []
+    #            i = 1
+    #            for line in f:
+    #                if line[0] != "$":
+    #                    atomName.append(line.strip().split()[3] + str(i))
+    #                    atomCoord.append([float(line.strip().split()[i])
+    #                                      for i in range(3)])
+    #                    i += 1
+    #                if "$user-defined bonds" in line:
+    #                    break
+    #        finally:
+    #            f.close()
+    #        return atomName, atomCoord 
+
+    #    atomNames, atomCoords = readcartesians(tmpFileName)
+    #    ati = atomNames.index(atomsInvolved[0])
+    #    atj = atomNames.index(atomsInvolved[1])
+    #    atk = atomNames.index(atomsInvolved[2])
+    #    atcoordi = np.array(atomCoords[ati]) 
+    #    atcoordj = np.array(atomCoords[atj])
+    #    atcoordk = np.array(atomCoords[atk])
+    #    rij = atcoordj - atcoordi
+    #    stepij = rij/np.linalg.norm(rij)
+
+    #    def write_tm(outputFile,atomNames,atomCoords):
+    #        fileName = outputFile 
+    #        subprocess.run(['touch',fileName]) 
+    #        with open(fileName,"w") as f:
+    #            f.write("$coord\n")
+    #            for i, atomCoord in enumerate(atomCoords):
+    #                f.write('{x:20.14f}  {y:20.14f}  {z:20.14f}'
+    #                        '      {n:3}\n'.format(x=atomCoord[0], y=atomCoord[1],
+    #                                          z=atomCoord[2], n=atomNames[i][0]))
+    #            f.write("$end")
+
+    #    for i in np.arange(nrSteps):
+    #        atcoordk = atcoordk - stepij*stepSize
+    #        tmpCoords = copy.deepcopy(atomCoords)
+    #        tmpCoords[atk] = atcoordk.tolist()
+    #        outFile = CWD + "step" + str(i)
+    #        write_tm(outFile, atomNames, tmpCoords)
+
+    #if args.linscan2dCart:
+    #    tmpFileName    = CWD + args.linscan2dCart[0]
+    #    atomsInvolved1 = args.linscan2dCart[1].split("-")
+    #    atomsInvolved2 = args.linscan2dCart[2].split("-")
+    #    stepSize1       = float(args.linscan2dCart[3])
+    #    stepSize2       = float(args.linscan2dCart[4])
+    #    nrSteps        = int(args.linscan2dCart[5])
+    #    secondStep     = float(args.linscan2dCart[6])
+
+    #    def readcartesians(filename):
+    #        f = open(filename)
+    #        try:
+    #            atomName = []
+    #            atomCoord = []
+    #            i = 1
+    #            for line in f:
+    #                if line[0] != "$":
+    #                    atomName.append(line.strip().split()[3] + str(i))
+    #                    atomCoord.append([float(line.strip().split()[i])
+    #                                      for i in range(3)])
+    #                    i += 1
+    #                if "$user-defined bonds" in line:
+    #                    break
+    #        finally:
+    #            f.close()
+    #        return atomName, atomCoord 
+
+    #    atomNames, atomCoords = readcartesians(tmpFileName)
+    #    ati1 = atomNames.index(atomsInvolved1[0])
+    #    atj1 = atomNames.index(atomsInvolved1[1])
+    #    atk1 = atomNames.index(atomsInvolved1[2])
+    #    ati2 = atomNames.index(atomsInvolved2[0])
+    #    atj2 = atomNames.index(atomsInvolved2[1])
+    #    atk2 = atomNames.index(atomsInvolved2[2])
+    #    atcoordi1 = np.array(atomCoords[ati1]) 
+    #    atcoordj1 = np.array(atomCoords[atj1])
+    #    atcoordk1 = np.array(atomCoords[atk1])
+    #    atcoordi2 = np.array(atomCoords[ati2]) 
+    #    atcoordj2 = np.array(atomCoords[atj2])
+    #    atcoordk2 = np.array(atomCoords[atk2])
+    #    rij1 = atcoordj1 - atcoordi1
+    #    stepij1 = rij1/np.linalg.norm(rij1)
+    #    rij2 = atcoordj2 - atcoordi2
+    #    stepij2 = rij2/np.linalg.norm(rij2)
+
+    #    def write_tm(outputFile,atomNames,atomCoords):
+    #        fileName = outputFile 
+    #        subprocess.run(['touch',fileName]) 
+    #        with open(fileName,"w") as f:
+    #            f.write("$coord\n")
+    #            for i, atomCoord in enumerate(atomCoords):
+    #                f.write('{x:20.14f}  {y:20.14f}  {z:20.14f}'
+    #                        '      {n:3}\n'.format(x=atomCoord[0], y=atomCoord[1],
+    #                                          z=atomCoord[2], n=atomNames[i][0]))
+    #            f.write("$end")
+
+    #    for i in np.arange(nrSteps):
+    #        atcoordk1 = atcoordk1 + stepij1*stepSize1
+    #        atcoordktmp = copy.deepcopy(atcoordk1)
+    #        atcoordk2 = atcoordktmp + stepij2*stepSize2*secondStep
+    #        tmpCoords = copy.deepcopy(atomCoords)
+    #        tmpCoords[atk1] = atcoordk2.tolist()
+    #        outFile = CWD + "step" + str(i)
+    #        write_tm(outFile, atomNames, tmpCoords)
+
+if __name__ == '__main__':
+    main()
+
