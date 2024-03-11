@@ -208,6 +208,49 @@ class Writer(object):
         json.dump(templateObject, fout, indent=4)
         fout.close()
 
+    def bagel_dyson(self): 
+        input_files = [
+            './input_files/' + x
+            for x in os.listdir('./input_files')
+            if 'QM.in' not in x
+        ]
+        for input_file in input_files:
+            subprocess.run(['cp', '-r', input_file, self.outputDir])
+        fileName = self.outputDir + '/QM.in' 
+        templateFile = './input_files/QM.in'
+        template = open(templateFile, 'r')    
+        templateLines = template.readlines() 
+        template.close()
+        with open(fileName, "w") as f:
+            f.write(str(len(self.inputCoords)) + '\n Dyson\n')
+            for i, atomCoord in enumerate(self.inputCoords):
+                f.write(
+                    '{n:3} {x:20.14f}  {y:20.14f}'
+                    '  {z:20.14f}'.format(
+                        x=atomCoord[0], 
+                        y=atomCoord[1],
+                        z=atomCoord[2],
+                        n=self.atomNames[i][0]
+                    )
+                )
+                f.write(
+                    '  {vx:20.14f}  {vy:20.14f}'
+                    '  {vz:20.14f}\n'.format(
+                        vx=0.0, 
+                        vy=0.0,
+                        vz=0.0
+                    )
+                )
+            for templateLine in templateLines:
+                if 'savedir' in templateLine:
+                    modTemplateLine = templateLine.split()[0] + ' '
+                    modTemplateLine += self.outputDir + '/temp\n'
+                    f.write(modTemplateLine)
+                    continue
+                f.write(templateLine)
+                
+        #    print(self.atomNames[i][0])
+
     def Z_matrix(self,outputFile):
         fileName = outputFile 
         subprocess.run(['touch',fileName]) 
@@ -391,7 +434,7 @@ class redundantInternals(molGraph):
             atomi = self.getNumberedAtom(torsvert[0])
             atomj = self.getNumberedAtom(torsvert[1])
             atomk = self.getNumberedAtom(torsvert[2])
-            #print(torsvert)
+            print(torsvert)
             atoml = self.getNumberedAtom(torsvert[3])
             posi = np.array(self.atomCoords[torsvert[0]])
             posj = np.array(self.atomCoords[torsvert[1]])
@@ -634,7 +677,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("-sh","--show",nargs=2)
     parser.add_argument("-c","--compare",nargs=3)
-    parser.add_argument("-cp","--convert",nargs=5)
+    parser.add_argument("-cp","--convert",nargs=4)
     parser.add_argument("-ls1d","--linscan1d",nargs=7)
     parser.add_argument("-ls2d","--linscan2d",nargs=8)
     parser.add_argument("-liic","--lininterp",nargs=5)
@@ -659,10 +702,8 @@ def main():
     
     if args.convert: 
         tmpFileName1 = CWD + args.convert[0]
-        tmpFileName2 = CWD + args.convert[1]
-        geom = redundantInternals(tmpFileName1,
-                                  filetype=args.convert[2]) 
-        geom.write(args.convert[4], filetype=args.convert[3]) 
+        atomNames, atomCoords = Cartesians(tmpFileName1).get(args.convert[1])
+        Writer(atomCoords, atomNames, args.convert[3]).write(args.convert[2]) 
         
     if args.linscan1d:
         tmpFileName   = CWD + args.linscan1d[0]
