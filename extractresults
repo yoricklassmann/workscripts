@@ -1,0 +1,130 @@
+#!/usr/bin/env python
+import os
+import numpy as np
+import subprocess 
+import molrecog 
+import itertools
+b2A = 0.529177249
+A2b = 1./b2A
+Hartree2ev = 27.211386245988
+ev2Hartree = 1./Hartree2ev
+
+
+def getChunks(cwd: str) -> list[str]:
+    fileName = cwd + "/final_output"
+    fileLines = (line for line in open(fileName,'r'))
+    nrICs = 0
+    inputLines = [] 
+    for iFileLine, fileLine in enumerate(fileLines):
+        if nrICs == 0 and iFileLine < 20:
+            inputLines.append(fileLine) 
+        elif nrICs == 0:
+            nrICs += 1
+            yield inputLines
+            inputLines = []
+        elif nrICs > 0:
+            if ('Initial condition =' in fileLine and
+                int(fileLine.split()[-1]) > nrICs):
+                yield inputLines
+                nrICs += 1
+                inputLines = [fileLine]
+            else:
+                inputLines.append(fileLine) 
+
+    yield inputLines
+
+
+def getElData(cwd: str, jInitCond: int) -> dict[str, float]:
+    fileName = cwd + "/ICs/IC" + str(jInitCond) + '/input.out'
+    fileLines = (line for line in open(fileName,'r'))
+    elData = {}
+    readOsc = False
+    coupledState = 0
+    for fileLine in fileLines:
+        splitLine = fileLine.strip().split() 
+        if '* MS-CASPT2 energy :' in fileLine:
+            state = splitLine[-2]
+            energy = float(splitLine[-1])
+            elData['E' + state] = energy  
+            
+        if 'Oscillator strength' in fileLine:
+            coupledState += 1
+            oscStrength = float(splitLine[-2]) 
+            elData['f0' + str(coupledState)] = oscStrength
+            continue 
+
+
+    return elData
+
+def substitute(inputChunk: list[str], 
+               elData: dict[str, float], 
+               iState: int) -> list[str]:
+
+    outputChunk = []
+    for line in inputChunk:
+        if 'Epot of initial state (eV):' in line:
+            tmpLine = line.split() 
+            tmpLine[5] = str(elData['E0'])[:6] + ' '
+            tmpLine[4] += ' '*3
+            tmpLine[-1] = str(elData['E' + str(iState)])[:6]
+            tmpLine[-2] += ' '*5
+            tmpLine = ' '.join(tmpLine)
+            tmpLine = ' ' + tmpLine + '\n'
+        elif 'Vertical excitation (eV):' in line:
+            tmpLine = line.split() 
+            tmpLine[3] = str(elData['E' + str(iState)]-
+                             elData['E0'])[:6] + ' '
+            tmpLine[2] += ' '*5
+            tmpLine = ' '.join(tmpLine)
+            tmpLine = ' ' + tmpLine + '\n'
+        elif 'Oscillator strength:' in line:
+            tmpLine = line.split() 
+            tmpLine[-1] = str(elData['f0' + str(iState)])[:6]
+            tmpLine[1] += ' '*10
+            tmpLine = ' '.join(tmpLine)
+            tmpLine = ' ' + tmpLine + '\n'
+        elif 'State:' in line: 
+            tmpLine = line.split() 
+            tmpLine[-1] = str(iState + 1)
+            tmpLine[0] += ' '*24
+            tmpLine = ' '.join(tmpLine)
+            tmpLine = ' ' + tmpLine + '\n'
+        else:
+            tmpLine = line
+    
+        outputChunk.append(tmpLine)
+
+    return outputChunk
+        
+
+def main():
+    cwd = os.getcwd()
+    inputChunks = getChunks(cwd)
+    output = [] 
+    for i in range(4): 
+        output.append([])
+    for jInputChunk, inputChunk in enumerate(inputChunks):
+        #if jInputChunk == 1:
+        #    break
+        elData = getElData(cwd, jInputChunk + 1)
+        if jInputChunk == 0:
+            refGSEn = elData['E0']
+        
+        s0Diff = elData['E0'] - refGSEn
+        oldE0 = elData['E0']
+        elData['E0'] = s0Diff*Hartree2ev
+        for i in range(1,5): 
+            sIs0Diff = elData['E' + str(i)] - oldE0 + s0Diff 
+            elData['E' + str(i)] = sIs0Diff*Hartree2ev   
+            outputChunkI = substitute(inputChunk, elData, i)
+            output[i-1].extend(outputChunkI)
+    
+    for i in range(2,6): 
+        outFile = cwd + '/final_output.' + str(i)
+        with open(outFile, 'w') as outFile: 
+            for line in output[i-2]:
+                outFile.write(line)
+
+
+if __name__ == "__main__":
+    main()

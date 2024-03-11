@@ -398,12 +398,12 @@ class redundantInternals(molGraph):
             posk = np.array(self.atomCoords[torsvert[2]])
             posl = np.array(self.atomCoords[torsvert[3]])
             vecij = posj - posi 
-            veckj = posk - posj 
-            veclk = posl - posk 
-            nrmlijk = np.cross(vecij,veckj)
-            nrmljkl = np.cross(veckj,veclk)
-            ccijkl = np.dot(veckj,np.cross(nrmlijk,nrmljkl))
-            ddijkl = np.linalg.norm(veckj)*np.dot(nrmlijk,nrmljkl)
+            vecjk = posk - posj 
+            veckl = posl - posk 
+            nrmlijk = np.cross(vecij,vecjk)
+            nrmljkl = np.cross(vecjk,veckl)
+            ccijkl = np.dot(vecjk,np.cross(nrmlijk,nrmljkl))
+            ddijkl = np.linalg.norm(vecjk)*np.dot(nrmlijk,nrmljkl)
             torsi = np.arctan2(ccijkl,ddijkl)*rad2grad
             #if torsi < 0:
             #    torsi += 360

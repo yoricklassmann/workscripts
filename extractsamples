@@ -1,0 +1,148 @@
+#!/usr/bin/env python
+import os
+import numpy as np
+import subprocess 
+import molrecog 
+import itertools
+b2A = 0.529177249
+A2b = 1./b2A
+
+def head(iterator):
+    return list(next(iterator))
+
+def chunkedList(iterable, n):
+    def inner_chunked():
+        if n < 1:
+            raise ValueError('n must be at least one')
+        iterator = iter(iterable)
+
+        while chunk := list(itertools.islice(iterator, n)):
+            yield chunk
+    return inner_chunked()
+
+def getGeoms(cwd, nrAtoms):
+    fileName = cwd + "/final_output"
+    fileLines = lambda: (line for line in open(fileName,'r'))
+    geomLines = lambda: (
+        fileLine.strip().split() 
+        for fileLine in fileLines()
+        if len(fileLine.strip().split()) == 6
+    ) 
+
+    atomCoords = (
+        [float(atomCoord) for atomCoord in geomLine[2:5]]
+        for geomLine in geomLines()
+    )
+
+    atomNames = (
+        geomLine[0] 
+        for geomLine in geomLines()
+    )
+
+    #for atomName, atomCoord in zip(atomNames, atomCoords):
+    #    print(atomName, atomCoord)
+
+    geomCoords = chunkedList(atomCoords, nrAtoms)
+    atomNames = head(chunkedList(atomNames, nrAtoms))
+    atomNames = [
+        atomName + str(iAtomName)
+        for iAtomName, atomName in enumerate(atomNames)
+    ]
+    
+    return atomNames, geomCoords
+
+    #    names  = []
+    #    geom   = []
+    #    masses = []
+    #    for geomLine in geomLines:
+    #        currSplitLine = geomLine.strip().split()
+    #        names.append(currSplitLine[0])
+    #        geom.append([float(x) for x in currSplitLine[2:5]])
+    #        masses.append(float(currSplitLine[5]))
+    #    assert((len(geom)   == parser.nrAtoms) 
+    #       and (len(masses) == parser.nrAtoms)
+    #       and (len(names)  == parser.nrAtoms))
+    #return names, geom, masses 
+
+
+#def writeICFile_TC(parser, names, geom, momentum, traj):
+#    fileName = parser.CWD + "/ICs/IC." + traj + ".xyz"
+#    with open(fileName, "w") as writeFile: 
+#        header = "UNITS=BOHR\n"
+#        writeFile.write(header)
+#        headerp1 = "{x:12d}".format(x = parser.nrAtoms) + "\n"
+#        writeFile.write(headerp1)
+#        geomLines = ""
+#        for i, g in enumerate(geom):
+#            geomLines += "{n:2}  ".format(n = names[i]) 
+#            geomLines += "{x:22.15E}  {y:22.15E}  {z:22.15E}\n".format(x = g[0], 
+#                                                                       y = g[1],
+#                                                                       z = g[2])
+#        writeFile.write(geomLines)
+#        intermezzo = "# momenta\n"
+#        writeFile.write(intermezzo)
+#        momLines = ""
+#        for i, m in enumerate(momentum):
+#            if (i + 1) < parser.nrAtoms:
+#                momLines += "  {x:22.15E}  {y:22.15E}  {z:22.15E}\n".format(x = m[0], 
+#                                                                            y = m[1],
+#                                                                            z = m[2])
+#            else:
+#                momLines += "  {x:22.15E}  {y:22.15E}  {z:22.15E}".format(x = m[0], 
+#                                                                          y = m[1],
+#                                                                          z = m[2])
+#        writeFile.write(momLines)
+#
+#def writeICFile_ABIN(parser, names, geom, velocity, traj):
+#    geomFileName = parser.CWD + "/ABIN_inps/geom" + traj + ".xyz"
+#    with open(geomFileName, "w") as writeGeomFile: 
+#        header = "{x:12d}".format(x = parser.nrAtoms) + "\n"
+#        writeGeomFile.write(header)
+#        geomLines = "\n"
+#        for i, g in enumerate(geom):
+#            geomLines += "{n:2}  ".format(n = names[i]) 
+#            geomLines += "{x:22.15E}  {y:22.15E}  {z:22.15E}\n".format(x = g[0], 
+#                                                                       y = g[1],
+#                                                                       z = g[2])
+#        writeGeomFile.write(geomLines)
+#
+#    velocFileName = parser.CWD + "/ABIN_inps/veloc" + traj + ".xyz"
+#    with open(velocFileName, "w") as writeVelocFile:
+#        header = "{x:12d}".format(x = parser.nrAtoms) + "\n"
+#        writeVelocFile.write(header)
+#        velocLines = "\n"
+#        for i, v in enumerate(velocity):
+#            velocLines += "{n:2}  ".format(n = names[i]) 
+#            velocLines += "{x:22.15E}  {y:22.15E}  {z:22.15E}\n".format(x = v[0], 
+#                                                                        y = v[1],
+#                                                                        z = v[2])
+#        writeVelocFile.write(velocLines)
+
+#def getTrajs_TC(parser):
+#    for traj in range(1,parser.nrTraj+1):
+#        names, geom, masses  = getGeom(parser, str(traj))
+#        momentum      = getMom(parser, str(traj), masses) 
+#        writeICFile_TC(parser, names, geom, momentum, str(traj))
+#
+#def getTrajs_ABIN(parser):
+#    for traj in range(1,parser.nrTraj+1):
+#        names, geom, masses  = getGeom(parser, str(traj))
+#        velocity = getVeloc(parser, str(traj)) 
+#        writeICFile_ABIN(parser, names, geom, velocity, str(traj))
+        
+        
+
+def main():
+    cwd = os.getcwd()
+    atomNames, geoms = getGeoms(cwd, 5)
+    for iGeom, geom in enumerate(geoms):
+        currDir = cwd + '/ICs/IC' + str(iGeom + 1)
+        writer = molrecog.Writer(geom, atomNames, currDir)
+        writer.write('bagel')
+    #if parser.dynCode == "ABIN":
+    #    getTrajs_ABIN(parser)
+    #elif parser.dynCode == "TC":
+    #    getTrajs_TC(parser)
+
+if __name__ == "__main__":
+    main()
