@@ -131,6 +131,9 @@ class Cartesians(object):
             f.close()
         return atomName, atomCoord 
 
+    def movie_abin(self):
+        pass
+
 class Writer(object):
     def __init__(self, inputCoords, atomNames, outputDir):
         self.inputCoords = inputCoords
@@ -434,19 +437,19 @@ class redundantInternals(molGraph):
             atomi = self.getNumberedAtom(torsvert[0])
             atomj = self.getNumberedAtom(torsvert[1])
             atomk = self.getNumberedAtom(torsvert[2])
-            print(torsvert)
+            #print(torsvert)
             atoml = self.getNumberedAtom(torsvert[3])
             posi = np.array(self.atomCoords[torsvert[0]])
             posj = np.array(self.atomCoords[torsvert[1]])
             posk = np.array(self.atomCoords[torsvert[2]])
             posl = np.array(self.atomCoords[torsvert[3]])
             vecij = posj - posi 
-            vecjk = posk - posj 
-            veckl = posl - posk 
-            nrmlijk = np.cross(vecij,vecjk)
-            nrmljkl = np.cross(vecjk,veckl)
-            ccijkl = np.dot(vecjk,np.cross(nrmlijk,nrmljkl))
-            ddijkl = np.linalg.norm(vecjk)*np.dot(nrmlijk,nrmljkl)
+            veckj = posk - posj 
+            veclk = posl - posk 
+            nrmlijk = np.cross(vecij,veckj)
+            nrmljkl = np.cross(veckj,veclk)
+            ccijkl = np.dot(veckj,np.cross(nrmlijk,nrmljkl))
+            ddijkl = np.linalg.norm(veckj)*np.dot(nrmlijk,nrmljkl)
             torsi = np.arctan2(ccijkl,ddijkl)*rad2grad
             #if torsi < 0:
             #    torsi += 360
@@ -524,6 +527,13 @@ class redundantInternals(molGraph):
             molz = nrmlabc 
             molFrame = np.array([molx,moly,molz]).T
             D = np.matmul(molFrame,Dref) + C 
+            if len(positions) > 0:
+                # Hack to prevent atoms from bumping into each other: change sign of torsional dihedral
+                # Not sure if this is any good... 
+                if len([D for i in range(len(positions)) if (x := np.linalg.norm(positions[i]-D)) < 1.]) != 0:
+                    Dref = np.array([-R*np.cos(theta), -R*np.cos(phi)*np.sin(theta),
+                                     -R*np.sin(phi)*np.sin(theta)])
+                    D = np.matmul(molFrame,Dref) + C
             positions.append(D)
 
         if overWrite:
@@ -532,13 +542,17 @@ class redundantInternals(molGraph):
             return positions
 
         
-    def _mkdirs(self, step, CWD, other=None):
+    def _mkdirs(self, step, CWD, other=None, second=None):
         if other != None: 
             initialDir = CWD + "step0"  
             finalDir   = CWD + "step" + str(step)  
             subprocess.run(['mkdir',initialDir]) 
             subprocess.run(['mkdir',  finalDir]) 
             return initialDir, finalDir
+        elif second != None:
+            newDir = CWD + "step" + str(step) + "_" + str(second)
+            subprocess.run(['mkdir',  newDir]) 
+            return newDir
         else:
             newDir = CWD + "step" + str(step)
             subprocess.run(['mkdir',  newDir]) 
@@ -567,7 +581,6 @@ class redundantInternals(molGraph):
         stepSizeBL = np.array(diffBL)/nrSteps
         stepSizeBA = np.array(diffBA)/nrSteps
         stepSizeTD = np.array(diffTD)/nrSteps
-        print(stepSizeBL)
         initDir, finDir = self._mkdirs(nrSteps, CWD, other)
         self.transform_2_xyz(overWrite=True)
         other.transform_2_xyz(overWrite=True)
@@ -597,7 +610,33 @@ class redundantInternals(molGraph):
             #print(self.torsions[internalIndex])
             #print(internalIndex)
         print(self.torsions)
-        
+
+    def getInternal(self, internalType, internalIndex):
+        if internalType == "bl":
+            outInternal = self.bondLengths[internalIndex]
+        if internalType == "ba":
+            outInternal = self.bondAngles[internalIndex]
+        if internalType == "td":
+            outInternal = self.torsions[internalIndex]
+        return outInternal
+
+    def getInternals(self):
+        return (copy.deepcopy(self.bondLengths),
+                copy.deepcopy(self.bondAngles),
+                copy.deepcopy(self.torsions))
+
+    def setInternal(self, internalType, internalIndex, inpInternal):
+        if internalType == "bl":
+            self.bondLengths[internalIndex] = inpInternal
+        if internalType == "ba":
+            self.bondAngles[internalIndex] = inpInternal
+        if internalType == "td":
+            self.torsions[internalIndex] = inpInternal
+    
+    def setInternals(self, inpInternals):
+        self.bondLenghts = inpInternals[0]
+        self.bondAngles  = inpInternals[1]
+        self.torsions    = inpInternals[2]
     
     def rigidscan1D(self, internalType, atomsInvolved, stepSize, nrSteps, CWD,
                     filetype):
@@ -609,29 +648,47 @@ class redundantInternals(molGraph):
         self.transform_2_xyz(overWrite=True)
         initDir = self._mkdirs(0, CWD)
         self.write(initDir, filetype)
-        copyBLs = copy.deepcopy(self.bondLengths)
         for i in range(1,nrSteps+1):
             self.incrementInternal(internalType, internalIndex, stepSize)
             tmpCoords = self.transform_2_xyz()
             newDir = self._mkdirs(i, CWD)
             self.write(newDir, filetype, inputCoords = tmpCoords)
-        
-    def rigidscan2D(self, internalType, atomsInvolved, secondStep, stepSize, nrSteps, CWD):
-        if internalType[1] == "bl":
-            tmpAtoms = atomsInvolved[1].split("-")[:]
-            changedInternal1 = self.atomNames.index(tmpAtoms[-1])
-            self.bondLengths[changedInternal1] = self.bondLengths[changedInternal1] + secondStep 
-            self.rigidscan1D(internalType[0], atomsInvolved[0],stepSize,nrSteps,CWD)
-        elif internalType[1] == "ba":
-            tmpAtoms = atomsInvolved[1].split("-")[:]
-            changedInternal1 = self.atomNames.index(tmpAtoms[0])
-            self.bondLengths[changedInternal1] = self.bondLengths[changedInternal1] + secondStep 
-            self.rigidscan1D(internalType[0], atomsInvolved[0],stepSize,nrSteps,CWD)
-        elif internalType[1] == "td":
-            tmpAtoms = atomsInvolved[1].split("-")[:]
-            changedInternal1 = self.atomNames.index(tmpAtoms[0])
-            self.bondLengths[changedInternal1] = self.bondLengths[changedInternal1] + secondStep 
-            self.rigidscan1D(internalType[0], atomsInvolved[0],stepSize,nrSteps,CWD)
+
+    def atomTuple(self, string):
+        for i in range(len(string)):
+            try:
+                int(string[i:])
+                break
+            except:
+                pass
+        return (string[:i], string[i:])
+
+    def rigidscan2D(self, internalType, atomsInvolved, stepSize1, stepSize2,
+                    nrSteps1, nrSteps2, CWD, filetype):
+        tmpAtoms1 = atomsInvolved[0].split("-")[:]
+        tmpAtoms2 = atomsInvolved[1].split("-")[:]
+        internalType1 = internalType[0] 
+        internalType2 = internalType[1] 
+        if internalType != 'bl': 
+            internalIndex1 = self.atomNames.index(self.atomTuple(tmpAtoms1[0]))
+            internalIndex2 = self.atomNames.index(self.atomTuple(tmpAtoms2[0]))
+        else:
+            internalIndex1 = self.atomNames.index(self.atomTuple(tmpAtoms1[-1]))
+            internalIndex2 = self.atomNames.index(self.atomTuple(tmpAtoms2[-1]))
+        initDir = self._mkdirs(0, CWD, second=0)
+        self.transform_2_xyz(overWrite=True)
+        self.write(initDir, filetype)
+        for i in range(0,nrSteps1+1):
+            copyInternals2 = self.getInternals() 
+            for j in range(0,nrSteps2+1):
+                if (i == 0) and ( j == 0):
+                    continue
+                self.incrementInternal(internalType2, internalIndex2, stepSize2)
+                tmpCoords2 = self.transform_2_xyz()
+                newDir = self._mkdirs(i, CWD, second=j)
+                self.write(newDir, filetype, inputCoords = tmpCoords2)
+            self.setInternals(copyInternals2)
+            self.incrementInternal(internalType1, internalIndex1, stepSize1)
 
     def __sub__(self, other):
         meanDiffBL  = 0.
@@ -671,6 +728,20 @@ class redundantInternals(molGraph):
         print("Total internals distance") 
         print(meanDiffTot)
 
+class Movie():
+    def __init__(self, fname=None, code=None):
+        if (fname != None) and (code != None):
+            self.fname = fname
+            self.code  = code 
+        else:
+            raise ValueError("fname and code variables can't be none!")
+        _movie = Cartesians(self.fname).get("movie_" + self.code)
+
+    def sample(self,nrSteps, stepSize, CWD, filetype): 
+        for time, geom in _movie(nrSteps, stepSize):
+            tmpDir = CWD + "step" + str(time)  
+            subprocess.run(['mkdir',tmpDir]) 
+            Writer(geom.coords, geom.atomNames, outputDir).write(filetype)
 
 def main():
     CWD = os.getcwd() + "/"
@@ -679,8 +750,9 @@ def main():
     parser.add_argument("-c","--compare",nargs=3)
     parser.add_argument("-cp","--convert",nargs=4)
     parser.add_argument("-ls1d","--linscan1d",nargs=7)
-    parser.add_argument("-ls2d","--linscan2d",nargs=8)
+    parser.add_argument("-ls2d","--linscan2d",nargs=11)
     parser.add_argument("-liic","--lininterp",nargs=5)
+    parser.add_argument("-post","--postprocess",nargs=5)
     parser.add_argument("-b","--bohr",action='store_true')
     args = parser.parse_args()
 
@@ -718,13 +790,16 @@ def main():
         
     if args.linscan2d:
         tmpFileName   = CWD + args.linscan2d[0]
-        internalType  = args.linscan2d[1:3]
-        atomsInvolved = args.linscan2d[3:5]
-        secondStep    = float(args.linscan2d[5])
-        stepSize      = float(args.linscan2d[6])
-        nrSteps       = int(args.linscan2d[7])
-        geom = redundantInternals(tmpFileName) 
-        geom.rigidscan2D(internalType, atomsInvolved, secondStep, stepSize, nrSteps,CWD)
+        filetype      = args.linscan2d[1]
+        internalType  = args.linscan2d[2:4]
+        atomsInvolved = args.linscan2d[4:6]
+        stepSize1     = float(args.linscan2d[6])
+        stepSize2     = float(args.linscan2d[7])
+        nrSteps1      = int(args.linscan2d[8])
+        nrSteps2      = int(args.linscan2d[9])
+        geom = redundantInternals(tmpFileName, filetype=filetype) 
+        geom.rigidscan2D(internalType, atomsInvolved, stepSize1, stepSize2,
+                         nrSteps1, nrSteps2, CWD, args.linscan2d[10])
 
     if args.lininterp:
         tmpFileName1 = CWD + args.lininterp[0]
@@ -736,123 +811,13 @@ def main():
                                    filetype=filetype)
         geom1.interpolate_in_internals(geom2,int(args.lininterp[3]),CWD,args.lininterp[4])
 
-
-    #if args.linscan1dCart:
-    #    tmpFileName   = CWD + args.linscan1dCart[0]
-    #    atomsInvolved = args.linscan1dCart[1].split("-")
-    #    stepSize      = float(args.linscan1dCart[2])
-    #    nrSteps       = int(args.linscan1dCart[3])
-
-    #    def readcartesians(filename):
-    #        f = open(filename)
-    #        try:
-    #            atomName = []
-    #            atomCoord = []
-    #            i = 1
-    #            for line in f:
-    #                if line[0] != "$":
-    #                    atomName.append(line.strip().split()[3] + str(i))
-    #                    atomCoord.append([float(line.strip().split()[i])
-    #                                      for i in range(3)])
-    #                    i += 1
-    #                if "$user-defined bonds" in line:
-    #                    break
-    #        finally:
-    #            f.close()
-    #        return atomName, atomCoord 
-
-    #    atomNames, atomCoords = readcartesians(tmpFileName)
-    #    ati = atomNames.index(atomsInvolved[0])
-    #    atj = atomNames.index(atomsInvolved[1])
-    #    atk = atomNames.index(atomsInvolved[2])
-    #    atcoordi = np.array(atomCoords[ati]) 
-    #    atcoordj = np.array(atomCoords[atj])
-    #    atcoordk = np.array(atomCoords[atk])
-    #    rij = atcoordj - atcoordi
-    #    stepij = rij/np.linalg.norm(rij)
-
-    #    def write_tm(outputFile,atomNames,atomCoords):
-    #        fileName = outputFile 
-    #        subprocess.run(['touch',fileName]) 
-    #        with open(fileName,"w") as f:
-    #            f.write("$coord\n")
-    #            for i, atomCoord in enumerate(atomCoords):
-    #                f.write('{x:20.14f}  {y:20.14f}  {z:20.14f}'
-    #                        '      {n:3}\n'.format(x=atomCoord[0], y=atomCoord[1],
-    #                                          z=atomCoord[2], n=atomNames[i][0]))
-    #            f.write("$end")
-
-    #    for i in np.arange(nrSteps):
-    #        atcoordk = atcoordk - stepij*stepSize
-    #        tmpCoords = copy.deepcopy(atomCoords)
-    #        tmpCoords[atk] = atcoordk.tolist()
-    #        outFile = CWD + "step" + str(i)
-    #        write_tm(outFile, atomNames, tmpCoords)
-
-    #if args.linscan2dCart:
-    #    tmpFileName    = CWD + args.linscan2dCart[0]
-    #    atomsInvolved1 = args.linscan2dCart[1].split("-")
-    #    atomsInvolved2 = args.linscan2dCart[2].split("-")
-    #    stepSize1       = float(args.linscan2dCart[3])
-    #    stepSize2       = float(args.linscan2dCart[4])
-    #    nrSteps        = int(args.linscan2dCart[5])
-    #    secondStep     = float(args.linscan2dCart[6])
-
-    #    def readcartesians(filename):
-    #        f = open(filename)
-    #        try:
-    #            atomName = []
-    #            atomCoord = []
-    #            i = 1
-    #            for line in f:
-    #                if line[0] != "$":
-    #                    atomName.append(line.strip().split()[3] + str(i))
-    #                    atomCoord.append([float(line.strip().split()[i])
-    #                                      for i in range(3)])
-    #                    i += 1
-    #                if "$user-defined bonds" in line:
-    #                    break
-    #        finally:
-    #            f.close()
-    #        return atomName, atomCoord 
-
-    #    atomNames, atomCoords = readcartesians(tmpFileName)
-    #    ati1 = atomNames.index(atomsInvolved1[0])
-    #    atj1 = atomNames.index(atomsInvolved1[1])
-    #    atk1 = atomNames.index(atomsInvolved1[2])
-    #    ati2 = atomNames.index(atomsInvolved2[0])
-    #    atj2 = atomNames.index(atomsInvolved2[1])
-    #    atk2 = atomNames.index(atomsInvolved2[2])
-    #    atcoordi1 = np.array(atomCoords[ati1]) 
-    #    atcoordj1 = np.array(atomCoords[atj1])
-    #    atcoordk1 = np.array(atomCoords[atk1])
-    #    atcoordi2 = np.array(atomCoords[ati2]) 
-    #    atcoordj2 = np.array(atomCoords[atj2])
-    #    atcoordk2 = np.array(atomCoords[atk2])
-    #    rij1 = atcoordj1 - atcoordi1
-    #    stepij1 = rij1/np.linalg.norm(rij1)
-    #    rij2 = atcoordj2 - atcoordi2
-    #    stepij2 = rij2/np.linalg.norm(rij2)
-
-    #    def write_tm(outputFile,atomNames,atomCoords):
-    #        fileName = outputFile 
-    #        subprocess.run(['touch',fileName]) 
-    #        with open(fileName,"w") as f:
-    #            f.write("$coord\n")
-    #            for i, atomCoord in enumerate(atomCoords):
-    #                f.write('{x:20.14f}  {y:20.14f}  {z:20.14f}'
-    #                        '      {n:3}\n'.format(x=atomCoord[0], y=atomCoord[1],
-    #                                          z=atomCoord[2], n=atomNames[i][0]))
-    #            f.write("$end")
-
-    #    for i in np.arange(nrSteps):
-    #        atcoordk1 = atcoordk1 + stepij1*stepSize1
-    #        atcoordktmp = copy.deepcopy(atcoordk1)
-    #        atcoordk2 = atcoordktmp + stepij2*stepSize2*secondStep
-    #        tmpCoords = copy.deepcopy(atomCoords)
-    #        tmpCoords[atk1] = atcoordk2.tolist()
-    #        outFile = CWD + "step" + str(i)
-    #        write_tm(outFile, atomNames, tmpCoords)
+    if args.postprocess:
+        tmpFileName = CWD + args.postprocess[0]
+        code = args.postprocess[1]
+        stepSize = float(args.postprocess[2])
+        nrSteps  = int(args.postprocess[3])
+        movie = Movie(fname=tmpFileName, code=code) 
+        movie.sample(nrSteps, stepSize, CWD, args.postprocess[4])
 
 if __name__ == '__main__':
     main()
