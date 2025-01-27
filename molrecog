@@ -132,7 +132,53 @@ class Cartesians(object):
         return atomName, atomCoord 
 
     def movie_abin(self):
-        pass
+        def _gen_movie(stepSize):
+            step = 0
+            geom = {} 
+            frame = {}
+            time = 0
+            initNames, initCoord = self.xyz()
+            geom["coords"] = initCoord
+            geom["atomNames"] = initNames 
+            frame["time"] = time
+            frame["geom"] = geom
+            yield frame
+            frame = {}
+            with open("movie.xyz", "r") as lines:
+                nrAtoms = 0
+                readGeom = False
+                nrLines = 0
+                for line in lines:
+                    if nrAtoms == 0:
+                        nrAtoms = int(line.strip())
+
+                    if "Time step:" in line:
+                        tmpTime = float(line.strip().split()[-1])
+                        if not(tmpTime % stepSize):
+                            readGeom = True
+                            nrLines += 1
+                            frame["time"] = tmpTime 
+                            atomName = []
+                            atomCoord = []
+                            continue
+                    
+                    if readGeom:
+                        nrLines += 1
+                        atomName.append((line.strip().split()[0], str(nrLines-1)))
+                        atomCoord.append([float(line.strip().split()[i]) for i in range(1,4)])
+                        if nrLines > nrAtoms:
+                            geom = {}
+                            geom["coords"] = atomCoord
+                            geom["atomNames"] = atomName
+                            frame["geom"] = geom
+                            yield frame
+                            frame = {}
+                            readGeom = False
+                            nrLines = 0
+                        
+                
+
+        return _gen_movie
 
 class Writer(object):
     def __init__(self, inputCoords, atomNames, outputDir):
@@ -729,19 +775,23 @@ class redundantInternals(molGraph):
         print(meanDiffTot)
 
 class Movie():
-    def __init__(self, fname=None, code=None):
+    def __init__(self, fname=None, code=None, init=False, initFile=None):
         if (fname != None) and (code != None):
             self.fname = fname
             self.code  = code 
         else:
             raise ValueError("fname and code variables can't be none!")
-        _movie = Cartesians(self.fname).get("movie_" + self.code)
+        self._movie = Cartesians(self.fname).get("movie_" + self.code)
 
-    def sample(self,nrSteps, stepSize, CWD, filetype): 
-        for time, geom in _movie(nrSteps, stepSize):
-            tmpDir = CWD + "step" + str(time)  
+    def sample(self, stepSize, CWD, filetype): 
+        step = 0
+        for frame in self._movie(stepSize):
+            tmpDir = CWD + "step" + str(step)  
+            step += 1
             subprocess.run(['mkdir',tmpDir]) 
-            Writer(geom.coords, geom.atomNames, outputDir).write(filetype)
+            Writer(frame["geom"]["coords"], 
+                   frame["geom"]["atomNames"],
+                   tmpDir).write(filetype)
 
 def main():
     CWD = os.getcwd() + "/"
@@ -752,7 +802,7 @@ def main():
     parser.add_argument("-ls1d","--linscan1d",nargs=7)
     parser.add_argument("-ls2d","--linscan2d",nargs=11)
     parser.add_argument("-liic","--lininterp",nargs=5)
-    parser.add_argument("-post","--postprocess",nargs=5)
+    parser.add_argument("-post","--postprocess",nargs=4)
     parser.add_argument("-b","--bohr",action='store_true')
     args = parser.parse_args()
 
@@ -815,9 +865,8 @@ def main():
         tmpFileName = CWD + args.postprocess[0]
         code = args.postprocess[1]
         stepSize = float(args.postprocess[2])
-        nrSteps  = int(args.postprocess[3])
         movie = Movie(fname=tmpFileName, code=code) 
-        movie.sample(nrSteps, stepSize, CWD, args.postprocess[4])
+        movie.sample(stepSize, CWD, args.postprocess[3])
 
 if __name__ == '__main__':
     main()
